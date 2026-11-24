@@ -134,7 +134,8 @@
                 <li><strong class="text-white">3. 勝負與連擊規則：</strong>
                     <br>• <span class="text-rose-400 font-bold">玩家 1 (紅方)</span> 目標是將左側 16 隻紅字棋全數打入四角球袋；<span class="text-sky-300 font-bold">玩家 2 / AI (黑方)</span> 目標是將右側 16 隻黑字棋全數打入球袋。
                     <br>• 率先將<strong>對方全部 16 隻棋子</strong>打入球袋的一方獲勝！只要合法打入對方棋子即可獲得<strong>連擊獎勵</strong>繼續出桿。</li>
-                <li><strong class="text-white">4. 射子入袋：</strong>若射子跌入球袋，當前回合立即結束，進洞的棋子不會放回中間，下一回合由對方從己方圓圈發球。</li>
+                <li><strong class="text-white">4. 自由子規則：</strong>對手棋子只要有一部分進入己方射子圈或壓到射子圈邊界，即成為己方的<strong>「自由子」（盤面顯示青藍色光環）</strong>。直接點擊自由子即可代替射子進行射擊，但<strong>不可隨意拿起擺位</strong>，必須在原位用棋桿打出。</li>
+                <li><strong class="text-white">5. 射子入袋：</strong>若射子跌入球袋，當前回合立即結束，進洞棋子不會放回中間，下一回合由對方從己方圓圈發球。</li>
             </ul>
             <div class="mt-6 text-right">
                 <button id="confirm-rules" class="px-5 py-2 bg-gradient-to-r from-amber-600 to-orange-500 hover:from-amber-500 hover:to-orange-400 text-stone-950 font-black rounded-xl transition">開始對戰</button>
@@ -306,9 +307,10 @@
     let currentPlayer = 1;
     let comboStreak = 0;
     let activeCircleKey = 'bottomLeft';
+    let activeShooterPiece = null; // 當前實際用來射擊的棋子（預設為射子，亦可點擊自由子在原位射擊）
     let pieces = [];
     let pocketAnimations = [];
-    let shotEvents = { pottedRed: 0, pottedBlack: 0, pottedStriker: false, cuePivotViolation: false };
+    let shotEvents = { pottedRed: 0, pottedBlack: 0, pottedStriker: false, cuePivotViolation: false, usedFreePiece: false };
     let aiTimer = null;
     let pointer = {
         isDown: false,
@@ -454,6 +456,37 @@
         return pieces.find(p => p.type === 'striker');
     }
 
+    function getActiveShooter() {
+        if (activeShooterPiece && activeShooterPiece.active) {
+            return activeShooterPiece;
+        }
+        return getStriker();
+    }
+
+    /**
+     * 自由子判定：對手棋子只要有一部分進入己方射子圈，或壓到射子圈邊界，即成為該方的自由子
+     */
+    function isFreePieceForPlayer(piece, player = currentPlayer) {
+        if (!piece || !piece.active) return false;
+        const opponentType = player === 1 ? 'black' : 'red';
+        if (piece.type !== opponentType) return false;
+
+        const playerCircles = getPlayerCircles(player);
+        for (let key of playerCircles) {
+            const sc = SHOOT_CIRCLES[key];
+            if (!sc) continue;
+            const dist = Math.hypot(piece.x - sc.x, piece.y - sc.y);
+            if (dist <= SHOOT_CIRCLE_RADIUS + piece.radius) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function getFreePiecesForPlayer(player = currentPlayer) {
+        return pieces.filter(p => isFreePieceForPlayer(p, player));
+    }
+
     /**
      * 取得指定玩家可用的發球圓圈：
      * - 玩家 1 (紅方)：左下 / 左上
@@ -466,7 +499,7 @@
     /**
      * 檢查射子在指定位置是否不與其他活躍棋子重疊（且位於棋盤可活動區域內）
      */
-    function isStrikerSpotFree(x, y) {
+    function isStrikerSpotFree(x, y, ignorePiece = null) {
         if (
             x - STRIKER_RADIUS < PLAY_MIN + 1 ||
             x + STRIKER_RADIUS > PLAY_MAX - 1 ||
@@ -477,7 +510,7 @@
         }
 
         for (let p of pieces) {
-            if (!p.active || p.type === 'striker') continue;
+            if (!p.active || p.type === 'striker' || p === ignorePiece) continue;
             if (Math.hypot(p.x - x, p.y - y) < STRIKER_RADIUS + p.radius + 1.5) {
                 return false;
             }
@@ -490,15 +523,15 @@
      * - 紅方 (player 1)：棋棍支點只可在左方邊框 (PLAY_MIN - FRAME_WIDTH <= pivotX <= PLAY_MIN)
      * - 黑方/AI (player 2)：棋棍支點只可在右方邊框 (PLAY_MAX <= pivotX <= PLAY_MAX + FRAME_WIDTH)
      */
-    function getCuePivotInfo(striker, angle, power, player = currentPlayer) {
+    function getCuePivotInfo(shooter, angle, power, player = currentPlayer) {
         const powerRatio = Math.max(0, Math.min(1, power / MAX_POWER));
         const backAngle = angle + Math.PI;
         const pullback = powerRatio * 95;
-        const tipDist = striker.radius + 8 + pullback;
+        const tipDist = shooter.radius + 8 + pullback;
         // 棋棍支點參考位置
         const pivotDist = tipDist + 85;
-        const pivotX = striker.x + Math.cos(backAngle) * pivotDist;
-        const pivotY = striker.y + Math.sin(backAngle) * pivotDist;
+        const pivotX = shooter.x + Math.cos(backAngle) * pivotDist;
+        const pivotY = shooter.y + Math.sin(backAngle) * pivotDist;
 
         const leftRailMin = PLAY_MIN - FRAME_WIDTH;
         const leftRailMax = PLAY_MIN;
@@ -527,6 +560,7 @@
 
         activeCircleKey = circleKey;
         const striker = getStriker();
+        activeShooterPiece = striker;
         const maxOffset = SHOOT_CIRCLE_RADIUS - STRIKER_RADIUS + 8; // 允許射子中心在發球圓圈範圍內微調
 
         let targetX = desiredX !== null ? desiredX : circle.x;
@@ -578,22 +612,33 @@
 
         const defaultCircle = player === 1 ? 'bottomLeft' : 'topRight';
         placeStrikerInCircle(defaultCircle, null, null, player);
+        const freePieces = getFreePiecesForPlayer(player);
         updateScoreboardUI();
 
         const pLabel = player === 1 ? '玩家 1 (紅方·左列)' : (gameMode === 'AI' ? '電腦 AI (黑方·右列)' : '玩家 2 (黑方·右列)');
 
         if (player === 2 && gameMode === 'AI') {
             turnPhase = 'AI_THINKING';
-            setBanner(`${pLabel} 正在觀察兩側棋列並瞄準出桿...`, 'text-sky-300');
+            setBanner(`${pLabel} 正在觀察兩側棋列${freePieces.length > 0 ? '與自由子' : ''}並瞄準出桿...`, 'text-sky-300');
             aiTimer = setTimeout(executeAITurn, 900);
         } else {
             turnPhase = 'PLACE';
             const sideHint = player === 1 ? '己方「左下圓圈」或「左上圓圈」' : '己方「右下圓圈」或「右上圓圈」';
-            setBanner(`${pLabel} 回合：點擊${sideHint}放置射子，按住射子向後拉動木棍出桿！`, 'text-amber-300');
+            const freeHint = freePieces.length > 0 ? `；盤面有 ${freePieces.length} 隻「自由子」(青藍圈)，可直接點擊在原位擊出！` : '';
+            setBanner(`${pLabel} 回合：點擊${sideHint}放置射子，按住射子向後拉動木棍出桿${freeHint}`, 'text-amber-300');
         }
     }
 
     function evaluateShotOutcome() {
+        // 若上一桿是用自由子射擊，先把一般射子重新放回場上待命
+        const striker = getStriker();
+        if (striker && !striker.active && !shotEvents.pottedStriker) {
+            striker.active = true;
+            striker.vx = 0;
+            striker.vy = 0;
+        }
+        activeShooterPiece = striker;
+
         // 規則：紅方目標是打清黑方 16 隻棋；黑方目標是打清紅方 16 隻棋
         const targetPotted = currentPlayer === 1 ? shotEvents.pottedBlack : shotEvents.pottedRed;
         const ownPotted = currentPlayer === 1 ? shotEvents.pottedRed : shotEvents.pottedBlack;
@@ -675,14 +720,62 @@
     function executeAITurn() {
         if (turnPhase !== 'AI_THINKING' || currentPlayer !== 2) return;
 
-        const blackPieces = pieces.filter(p => p.type === 'black' && p.active);
+        // 黑方/AI 的目標是將紅方棋子 ('red') 打入球袋，避免將己方黑棋 ('black') 打入
+        const redPieces = pieces.filter(p => p.type === 'red' && p.active);
+        const freePieces = getFreePiecesForPlayer(2);
         // 黑方/AI 只能使用右下 / 右上兩個發球圓圈
         const candidateCircles = ['bottomRight', 'topRight'];
 
         let bestShot = null;
         let bestScore = -Infinity;
 
-        // 評估兩個右方發球圓圈中多個微調點位，並確保棋棍支點不超越右方邊框
+        // 1. 優先評估己方射子圈內的「自由子」（自由子不可移動，必須在原位直接射擊）
+        for (let fp of freePieces) {
+            for (let pocket of POCKETS) {
+                const toPocketX = pocket.x - fp.x;
+                const toPocketY = pocket.y - fp.y;
+                const distToPocket = Math.hypot(toPocketX, toPocketY);
+                if (distToPocket < 1) continue;
+
+                const dirShotX = toPocketX / distToPocket;
+                const dirShotY = toPocketY / distToPocket;
+                const shotAngle = Math.atan2(dirShotY, dirShotX);
+                const power = Math.min(MAX_POWER * 0.88, Math.max(15, distToPocket * 0.045));
+                const pivotInfo = getCuePivotInfo(fp, shotAngle, power, 2);
+                if (pivotInfo.outOfBounds) continue;
+
+                let blocked = false;
+                for (let other of pieces) {
+                    if (!other.active || other.type === 'striker' || other === fp) continue;
+                    const ox = other.x - fp.x;
+                    const oy = other.y - fp.y;
+                    const proj = ox * dirShotX + oy * dirShotY;
+                    if (proj > 0 && proj < distToPocket) {
+                        const perpDist = Math.hypot(ox - proj * dirShotX, oy - proj * dirShotY);
+                        if (perpDist < other.radius + fp.radius - 1) {
+                            blocked = true;
+                            break;
+                        }
+                    }
+                }
+                if (!blocked) {
+                    const evalScore = 175 - distToPocket * 0.1;
+                    if (evalScore > bestScore) {
+                        bestScore = evalScore;
+                        bestShot = {
+                            isFreePiece: true,
+                            freePiece: fp,
+                            x: fp.x,
+                            y: fp.y,
+                            angle: shotAngle,
+                            power: power
+                        };
+                    }
+                }
+            }
+        }
+
+        // 2. 評估兩個右方發球圓圈中多個微調點位，並確保棋棍支點不超越右方邊框
         for (let cKey of candidateCircles) {
             const c = SHOOT_CIRCLES[cKey];
             const offsets = [
@@ -698,7 +791,7 @@
                 const sy = c.y + off.dy;
                 if (!isStrikerSpotFree(sx, sy)) continue;
 
-                for (let target of blackPieces) {
+                for (let target of redPieces) {
                     for (let pocket of POCKETS) {
                         const toPocketX = pocket.x - target.x;
                         const toPocketY = pocket.y - target.y;
@@ -723,7 +816,7 @@
                         const cutAlignment = dirShotX * dirPocketX + dirShotY * dirPocketY;
                         if (cutAlignment < 0.25) continue;
 
-                        // 檢查路徑是否被紅棋或射子阻擋
+                        // 檢查路徑是否被其他棋子阻擋（特別避免撞飛己方黑棋）
                         let blockedPenalty = 0;
                         for (let other of pieces) {
                             if (!other.active || other.type === 'striker' || other === target) continue;
@@ -733,8 +826,22 @@
                             if (proj > 0 && proj < distToGhost) {
                                 const perpDist = Math.hypot(ox - proj * dirShotX, oy - proj * dirShotY);
                                 if (perpDist < other.radius + STRIKER_RADIUS - 2) {
-                                    if (other.type === 'black') blockedPenalty += 18;
-                                    else blockedPenalty += 110;
+                                    if (other.type === 'red') blockedPenalty += 18;
+                                    else blockedPenalty += 130;
+                                }
+                            }
+                        }
+
+                        // 若目標紅棋撞向袋口途中會把己方黑棋推入袋中，大幅扣分避開
+                        for (let own of pieces) {
+                            if (!own.active || own.type !== 'black') continue;
+                            const ox = own.x - target.x;
+                            const oy = own.y - target.y;
+                            const proj = ox * dirPocketX + oy * dirPocketY;
+                            if (proj > 0 && proj < distToPocket + POCKET_RADIUS) {
+                                const perpDist = Math.hypot(ox - proj * dirPocketX, oy - proj * dirPocketY);
+                                if (perpDist < own.radius + target.radius + 4) {
+                                    blockedPenalty += 180;
                                 }
                             }
                         }
@@ -752,6 +859,7 @@
                         if (evalScore > bestScore) {
                             bestScore = evalScore;
                             bestShot = {
+                                isFreePiece: false,
                                 circleKey: cKey,
                                 x: sx,
                                 y: sy,
@@ -764,9 +872,9 @@
             }
         }
 
-        // 若無直接角度，搜尋能讓支點落在右方邊框內的出桿角度與力度
+        // 若無直接角度，瞄準場上剩餘的紅棋（而非己方黑棋）並確保支點落在右方邊框內
         if (!bestShot) {
-            const fallbackTarget = blackPieces[Math.floor(blackPieces.length / 2)] || { x: PLAY_MAX - 25, y: CENTER };
+            const fallbackTarget = redPieces[Math.floor(redPieces.length / 2)] || { x: PLAY_MIN + 25, y: CENTER };
             placeStrikerInCircle('topRight', null, null, 2);
             const striker = getStriker();
             let chosenAngle = Math.atan2(fallbackTarget.y - striker.y, fallbackTarget.x - striker.x);
@@ -787,6 +895,7 @@
             }
 
             bestShot = {
+                isFreePiece: false,
                 circleKey: 'topRight',
                 x: striker.x,
                 y: striker.y,
@@ -795,19 +904,31 @@
             };
         }
 
-        const jitterAngle = bestShot.angle + (Math.random() - 0.5) * 0.025;
+        let jitterAngle = bestShot.angle + (Math.random() - 0.5) * 0.025;
         let jitterPower = Math.min(MAX_POWER, Math.max(12, bestShot.power * (0.96 + Math.random() * 0.06)));
 
-        placeStrikerInCircle(bestShot.circleKey, bestShot.x, bestShot.y, 2);
-        const striker = getStriker();
-        if (getCuePivotInfo(striker, jitterAngle, jitterPower, 2).outOfBounds) {
+        let shooter = null;
+        if (bestShot.isFreePiece && bestShot.freePiece && bestShot.freePiece.active) {
+            const striker = getStriker();
+            striker.active = false;
+            striker.vx = 0;
+            striker.vy = 0;
+            activeShooterPiece = bestShot.freePiece;
+            activeCircleKey = null;
+            shooter = bestShot.freePiece;
+        } else {
+            placeStrikerInCircle(bestShot.circleKey, bestShot.x, bestShot.y, 2);
+            shooter = getStriker();
+        }
+
+        if (getCuePivotInfo(shooter, jitterAngle, jitterPower, 2).outOfBounds) {
             jitterAngle = bestShot.angle;
             jitterPower = bestShot.power;
         }
 
         pointer.aimAngle = jitterAngle;
         pointer.aimPower = jitterPower;
-        pointer.pivotOutOfBounds = getCuePivotInfo(striker, jitterAngle, jitterPower, 2).outOfBounds;
+        pointer.pivotOutOfBounds = getCuePivotInfo(shooter, jitterAngle, jitterPower, 2).outOfBounds;
 
         setTimeout(() => {
             if (turnPhase === 'AI_THINKING') {
@@ -818,18 +939,20 @@
 
     function launchStriker(angle, power) {
         initAudio();
-        const striker = getStriker();
-        const pivotInfo = getCuePivotInfo(striker, angle, power, currentPlayer);
+        const shooter = getActiveShooter();
+        const isUsingFreePiece = shooter.type !== 'striker';
+        const pivotInfo = getCuePivotInfo(shooter, angle, power, currentPlayer);
         const isViolation = pivotInfo.outOfBounds;
 
-        striker.vx = Math.cos(angle) * power;
-        striker.vy = Math.sin(angle) * power;
+        shooter.vx = Math.cos(angle) * power;
+        shooter.vy = Math.sin(angle) * power;
 
         shotEvents = {
             pottedRed: 0,
             pottedBlack: 0,
             pottedStriker: false,
-            cuePivotViolation: isViolation
+            cuePivotViolation: isViolation,
+            usedFreePiece: isUsingFreePiece
         };
 
         playWoodHitSound(power / MAX_POWER, true);
@@ -837,7 +960,12 @@
         pointer.isDown = false;
         pointer.aimPower = 0;
         pointer.pivotOutOfBounds = false;
-        setBanner(isViolation ? '⚠️ 棋棍支點不在己方邊框內，判定犯規中...' : '木棋高速撞擊中...', isViolation ? 'text-rose-400' : 'text-stone-300');
+        setBanner(
+            isViolation
+                ? '⚠️ 棋棍支點不在己方邊框內，判定犯規中...'
+                : (isUsingFreePiece ? '✨ 以自由子原位擊出！' : '木棋高速撞擊中...'),
+            isViolation ? 'text-rose-400' : 'text-stone-300'
+        );
     }
 
     // ==================== 2D 剛體彈性碰撞物理引擎 ====================
@@ -1010,7 +1138,7 @@
         }
 
         for (let p of pieces) {
-            if (!p.active || p.type === 'striker') continue;
+            if (!p.active || p === striker) continue;
             const combinedR = striker.radius + p.radius;
             const toPX = p.x - striker.x;
             const toPY = p.y - striker.y;
@@ -1212,12 +1340,12 @@
         ctx.fillStyle = 'rgba(0, 0, 0, 0.36)';
         ctx.fill();
 
-        // 2. 象牙白／奶黃色圓木主體 (Ivory/Cream Wooden Disc)
+        // 2. 象牙白／奶黃色圓木主體 (射子改為翡翠綠色圓木以資識別)
         const grad = ctx.createRadialGradient(x - radius * 0.3, y - radius * 0.3, radius * 0.1, x, y, radius);
         if (type === 'striker') {
-            grad.addColorStop(0, '#ffffff');
-            grad.addColorStop(0.7, '#fef3c7');
-            grad.addColorStop(1, '#d97706');
+            grad.addColorStop(0, '#6ee7b7');
+            grad.addColorStop(0.65, '#10b981');
+            grad.addColorStop(1, '#065f46');
         } else {
             grad.addColorStop(0, '#fffbeb');
             grad.addColorStop(0.72, '#f3e5c2');
@@ -1230,12 +1358,12 @@
         ctx.fill();
 
         // 外邊框線
-        ctx.strokeStyle = type === 'striker' ? '#b45309' : '#8c6d46';
+        ctx.strokeStyle = type === 'striker' ? '#064e3b' : '#8c6d46';
         ctx.lineWidth = 1.4;
         ctx.stroke();
 
         // 3. 棋面內圈雙環刻紋
-        const inkColor = type === 'red' ? '#dc2626' : (type === 'black' ? '#1c1917' : '#b45309');
+        const inkColor = type === 'red' ? '#dc2626' : (type === 'black' ? '#1c1917' : '#fef08a');
         ctx.beginPath();
         ctx.arc(x, y, radius * 0.78, 0, Math.PI * 2);
         ctx.strokeStyle = inkColor;
@@ -1268,16 +1396,30 @@
         pieces.forEach(p => {
             if (!p.active) return;
             drawWoodenDisc(p.x, p.y, p.radius, p.type, p.char);
+
+            // 若為當前玩家的「自由子」（壓到或進入己方射子圈的對手棋），繪製青藍色光環提示
+            if (turnPhase !== 'GAMEOVER' && isFreePieceForPlayer(p, currentPlayer)) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius + 4.5, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(56, 189, 248, 0.95)';
+                ctx.lineWidth = 2.2;
+                ctx.setLineDash([4, 3]);
+                ctx.stroke();
+                ctx.restore();
+            }
         });
 
-        // 3. 射子操作提示光環
-        const striker = getStriker();
-        if (striker && striker.active && (turnPhase === 'PLACE' || turnPhase === 'AIM') && !(currentPlayer === 2 && gameMode === 'AI')) {
+        // 3. 當前射擊子（一般射子或已選中的自由子）操作提示光環
+        const shooter = getActiveShooter();
+        if (shooter && shooter.active && (turnPhase === 'PLACE' || turnPhase === 'AIM') && !(currentPlayer === 2 && gameMode === 'AI')) {
             ctx.save();
             ctx.beginPath();
-            ctx.arc(striker.x, striker.y, striker.radius + 5, 0, Math.PI * 2);
-            ctx.strokeStyle = pointer.action === 'PULL_CUE' ? 'rgba(239, 68, 68, 0.9)' : 'rgba(253, 224, 71, 0.95)';
-            ctx.lineWidth = 2.2;
+            ctx.arc(shooter.x, shooter.y, shooter.radius + 6, 0, Math.PI * 2);
+            ctx.strokeStyle = pointer.action === 'PULL_CUE'
+                ? 'rgba(239, 68, 68, 0.9)'
+                : (shooter.type !== 'striker' ? 'rgba(56, 189, 248, 0.98)' : 'rgba(253, 224, 71, 0.95)');
+            ctx.lineWidth = 2.5;
             ctx.setLineDash([5, 4]);
             ctx.stroke();
             ctx.restore();
@@ -1289,7 +1431,7 @@
      */
     function drawAimingAndCueStick() {
         if (pointer.action !== 'PULL_CUE' || pointer.aimPower <= 0.5) return;
-        const striker = getStriker();
+        const striker = getActiveShooter();
         if (!striker || !striker.active) return;
 
         const pred = calculateAimPrediction(striker, pointer.aimAngle);
@@ -1488,15 +1630,39 @@
 
         const pos = getLogicalPos(clientX, clientY);
         const striker = getStriker();
-        const distToStriker = Math.hypot(pos.x - striker.x, pos.y - striker.y);
+        const currentShooter = getActiveShooter();
+        const distToCurrentShooter = Math.hypot(pos.x - currentShooter.x, pos.y - currentShooter.y);
 
-        // 1. 檢查是否點擊了當前玩家所屬的兩個發球圓圈之一（紅方：左下/左上；黑方：右下/右上）
+        // 1. 檢查是否點擊了己方射子圈內的「自由子」（對手棋壓到或進入己方射子圈）
+        // 自由子不可隨意拿起擺位，選中後直接以原位作為射擊起點
+        const freePieces = getFreePiecesForPlayer(currentPlayer);
+        for (let fp of freePieces) {
+            if (Math.hypot(pos.x - fp.x, pos.y - fp.y) <= fp.radius + 6) {
+                striker.active = false;
+                striker.vx = 0;
+                striker.vy = 0;
+                activeShooterPiece = fp;
+                activeCircleKey = null;
+                turnPhase = 'PLACE';
+                pointer.isDown = true;
+                pointer.x = pos.x;
+                pointer.y = pos.y;
+                pointer.action = 'PULL_CUE';
+                pointer.aimPower = 0;
+                pointer.pivotOutOfBounds = false;
+                setBanner('✨ 已選中「自由子」！不可拿起移動，請直接從原位向後拉動棋桿射擊！', 'text-sky-300');
+                return;
+            }
+        }
+
+        // 2. 檢查是否點擊了當前玩家所屬的兩個發球圓圈之一（切換回一般射子並放置在圓圈內）
         const allowedCircles = getPlayerCircles(currentPlayer);
         for (let key of allowedCircles) {
             const sc = SHOOT_CIRCLES[key];
             if (sc) {
                 const distToCircle = Math.hypot(pos.x - sc.x, pos.y - sc.y);
-                if (distToCircle <= SHOOT_CIRCLE_RADIUS + 14 && distToStriker > striker.radius + 8) {
+                const clickedOutsideCurrentShooter = (currentShooter.type !== 'striker') || (distToCurrentShooter > currentShooter.radius + 8);
+                if (distToCircle <= SHOOT_CIRCLE_RADIUS + 14 && clickedOutsideCurrentShooter) {
                     placeStrikerInCircle(key, pos.x, pos.y, currentPlayer);
                     turnPhase = 'PLACE';
                     setBanner('已切換至己方發球圓圈！按住射子向後拉動球桿瞄準並發射！', 'text-amber-300');
@@ -1505,7 +1671,7 @@
             }
         }
 
-        // 2. 點擊射子或從射子開始向後拉動木棍瞄準
+        // 3. 從當前射擊子（一般射子或已選定的自由子）開始向後拉動木棍瞄準
         pointer.isDown = true;
         pointer.x = pos.x;
         pointer.y = pos.y;
@@ -1520,7 +1686,7 @@
         if (currentPlayer === 2 && gameMode === 'AI') return;
 
         const pos = getLogicalPos(clientX, clientY);
-        const striker = getStriker();
+        const striker = getActiveShooter();
 
         if (pointer.action === 'PULL_CUE') {
             const dx = striker.x - pos.x;
